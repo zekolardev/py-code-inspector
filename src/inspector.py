@@ -13,7 +13,7 @@ class Issue:
 
 
 class FunctionAnalyzer(ast.NodeVisitor):
-    """Detect local variables that are assigned but never used."""
+    """Detect unused local assignments while respecting nested functions."""
 
     def __init__(self):
         self.issues = []
@@ -29,6 +29,20 @@ class FunctionAnalyzer(ast.NodeVisitor):
         used = set()
         nested_functions = []
 
+        arguments = (
+            node.args.posonlyargs
+            + node.args.args
+            + node.args.kwonlyargs
+        )
+
+        local_names = {argument.arg for argument in arguments}
+
+        if node.args.vararg:
+            local_names.add(node.args.vararg.arg)
+
+        if node.args.kwarg:
+            local_names.add(node.args.kwarg.arg)
+
         def collect(scope_node):
             for child in ast.iter_child_nodes(scope_node):
                 if isinstance(
@@ -40,37 +54,36 @@ class FunctionAnalyzer(ast.NodeVisitor):
                         ast.ClassDef,
                     ),
                 ):
-                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if isinstance(
+                        child,
+                        (ast.FunctionDef, ast.AsyncFunctionDef),
+                    ):
                         nested_functions.append(child)
                     continue
 
                 if isinstance(child, ast.Name):
                     if isinstance(child.ctx, ast.Store):
                         assigned.setdefault(child.id, child.lineno)
+                        local_names.add(child.id)
                     elif isinstance(child.ctx, ast.Load):
                         used.add(child.id)
 
                 collect(child)
 
         for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(
+                statement,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
                 nested_functions.append(statement)
                 continue
 
             collect(statement)
 
-        # Count references inside nested functions for the enclosing scope.
+        # A nested function can use a variable from its enclosing function.
         for nested in nested_functions:
-            for item in ast.walk(nested):
-                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load):
-                    used.add(item.id)
-
-        # Function parameters are not unused local assignments.
-        arguments = (
-            node.args.posonlyargs
-            + node.args.args
-            + node.args.kwonlyargs
-        )
+            nested_free_names = self._get_free_names(nested)
+            used.update(nested_free_names)
 
         for argument in arguments:
             assigned.pop(argument.arg, None)
@@ -92,9 +105,59 @@ class FunctionAnalyzer(ast.NodeVisitor):
                     )
                 )
 
-        # Analyze nested functions independently.
         for nested in nested_functions:
             self._analyze_function(nested)
+
+    @staticmethod
+    def _get_free_names(function_node):
+        """Return names loaded by a nested function but not defined locally."""
+        assigned = set()
+        loaded = set()
+        arguments = (
+            function_node.args.posonlyargs
+            + function_node.args.args
+            + function_node.args.kwonlyargs
+        )
+
+        assigned.update(argument.arg for argument in arguments)
+
+        if function_node.args.vararg:
+            assigned.add(function_node.args.vararg.arg)
+
+        if function_node.args.kwarg:
+            assigned.add(function_node.args.kwarg.arg)
+
+        def collect(scope_node):
+            for child in ast.iter_child_nodes(scope_node):
+                if isinstance(
+                    child,
+                    (
+                        ast.FunctionDef,
+                        ast.AsyncFunctionDef,
+                        ast.Lambda,
+                        ast.ClassDef,
+                    ),
+                ):
+                    continue
+
+                if isinstance(child, ast.Name):
+                    if isinstance(child.ctx, ast.Store):
+                        assigned.add(child.id)
+                    elif isinstance(child.ctx, ast.Load):
+                        loaded.add(child.id)
+
+                collect(child)
+
+        for statement in function_node.body:
+            if isinstance(
+                statement,
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            ):
+                continue
+
+            collect(statement)
+
+        return loaded - assigned
 
 
 def _check_names(tree):
@@ -110,7 +173,6 @@ def _check_names(tree):
 
         name = node.name
 
-        # Special Python methods such as __init__ are exempt.
         if name.startswith("__") and name.endswith("__"):
             continue
 
