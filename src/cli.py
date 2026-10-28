@@ -28,7 +28,7 @@ def main() -> int:
         "--severity",
         choices=["all", "warning", "error"],
         default="all",
-        help="Minimum issue severity to include",
+        help="Filter issues by severity (default: all).",
     )
 
     args = parser.parse_args()
