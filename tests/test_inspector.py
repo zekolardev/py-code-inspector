@@ -84,6 +84,18 @@ class InspectCodeTests(unittest.TestCase):
         issues = inspect_code(source)
         self.assertFalse(any(issue.code == "W001" for issue in issues))
 
+    def test_function_with_uppercase_is_reported(self):
+        issues = inspect_code("def badName():\n    return 1\n")
+        self.assertTrue(any(issue.code == "S001" for issue in issues))
+
+    def test_function_with_mixed_case_and_underscore_is_reported(self):
+        issues = inspect_code("def bad_Name():\n    return 1\n")
+        self.assertTrue(any(issue.code == "S001" for issue in issues))
+
+    def test_valid_snake_case_function_is_accepted(self):
+        issues = inspect_code("def calculate_total():\n    return 1\n")
+        self.assertFalse(any(issue.code == "S001" for issue in issues))
+
 
 if __name__ == "__main__":
     unittest.main()

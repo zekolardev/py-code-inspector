@@ -1,6 +1,7 @@
 
 import ast
 import io
+import re
 import tokenize
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +23,6 @@ class FunctionAnalyzer(ast.NodeVisitor):
         self.used: set[str] = set()
 
     def visit_FunctionDef(self, node):
-        # Nested functions have their own analysis scope.
-        # Their names are still assignments in the current scope.
         for statement in node.body:
             if isinstance(
                 statement,
@@ -38,7 +37,6 @@ class FunctionAnalyzer(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Lambda(self, node):
-        # Lambda scopes are intentionally analyzed separately in future work.
         return
 
     def visit_Name(self, node):
@@ -60,6 +58,7 @@ class FunctionAnalyzer(ast.NodeVisitor):
 
 def _check_names(tree: ast.AST) -> list[Issue]:
     issues = []
+    snake_case_pattern = re.compile(r"^[a-z_][a-z0-9_]*$")
 
     for node in ast.walk(tree):
         if not isinstance(
@@ -74,11 +73,15 @@ def _check_names(tree: ast.AST) -> list[Issue]:
             continue
 
         if isinstance(node, ast.ClassDef):
-            valid = name.isidentifier() and name[0].isupper() and "_" not in name
+            valid = (
+                name.isidentifier()
+                and name[0].isupper()
+                and "_" not in name
+            )
             expected = "PascalCase"
         else:
-            valid = name.isidentifier() and name.islower()
-            expected = "lowercase_with_underscores"
+            valid = bool(snake_case_pattern.fullmatch(name))
+            expected = "snake_case"
 
         if not valid:
             issues.append(
@@ -102,7 +105,6 @@ def _check_unused_variables(tree: ast.AST) -> list[Issue]:
         analyzer = FunctionAnalyzer()
         analyzer.visit(node)
 
-        # Function parameters are deliberately excluded from this check.
         for name, line in analyzer.defined.items():
             if name not in analyzer.used and not name.startswith("_"):
                 issues.append(
