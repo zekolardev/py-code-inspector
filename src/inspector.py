@@ -35,13 +35,11 @@ class FunctionAnalyzer(ast.NodeVisitor):
             + node.args.kwonlyargs
         )
 
-        local_names = {argument.arg for argument in arguments}
-
         if node.args.vararg:
-            local_names.add(node.args.vararg.arg)
+            arguments += (node.args.vararg,)
 
         if node.args.kwarg:
-            local_names.add(node.args.kwarg.arg)
+            arguments += (node.args.kwarg,)
 
         def collect(scope_node):
             for child in ast.iter_child_nodes(scope_node):
@@ -64,7 +62,6 @@ class FunctionAnalyzer(ast.NodeVisitor):
                 if isinstance(child, ast.Name):
                     if isinstance(child.ctx, ast.Store):
                         assigned.setdefault(child.id, child.lineno)
-                        local_names.add(child.id)
                     elif isinstance(child.ctx, ast.Load):
                         used.add(child.id)
 
@@ -86,12 +83,6 @@ class FunctionAnalyzer(ast.NodeVisitor):
         for argument in arguments:
             assigned.pop(argument.arg, None)
 
-        if node.args.vararg:
-            assigned.pop(node.args.vararg.arg, None)
-
-        if node.args.kwarg:
-            assigned.pop(node.args.kwarg.arg, None)
-
         for name, line in assigned.items():
             if name not in used and not name.startswith("_"):
                 self.issues.append(
@@ -107,7 +98,7 @@ class FunctionAnalyzer(ast.NodeVisitor):
 
     @staticmethod
     def _get_free_names(function_node):
-        """Return names loaded by a nested function but not defined locally."""
+        """Approximate names captured from an enclosing scope."""
         assigned = set()
         loaded = set()
 
@@ -203,7 +194,6 @@ def _check_unused_variables(tree):
 
 
 def _get_assigned_names(target):
-    """Extract names assigned by an assignment target."""
     if isinstance(target, ast.Name):
         return [(target.id, target.lineno)]
 
@@ -217,7 +207,6 @@ def _get_assigned_names(target):
 
 
 def _check_module_variables(tree):
-    """Check module-level assignments for naming and unused variables."""
     issues = []
     assigned = {}
 
@@ -250,7 +239,6 @@ def _check_module_variables(tree):
                     )
                 )
 
-    # Collect names referenced anywhere in the module, including functions.
     loaded_names = set()
 
     class LoadNameVisitor(ast.NodeVisitor):
@@ -291,6 +279,26 @@ def _check_long_comments(source):
     return issues
 
 
+def _check_bare_except(tree):
+    """Warn when an except handler catches every exception implicitly."""
+    issues = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.type is None:
+            issues.append(
+                Issue(
+                    code="S004",
+                    message=(
+                        "Avoid bare 'except:'. "
+                        "Catch a specific exception type instead."
+                    ),
+                    line=node.lineno,
+                )
+            )
+
+    return issues
+
+
 def inspect_code(source):
     try:
         tree = ast.parse(source)
@@ -309,6 +317,7 @@ def inspect_code(source):
     issues.extend(_check_unused_variables(tree))
     issues.extend(_check_module_variables(tree))
     issues.extend(_check_long_comments(source))
+    issues.extend(_check_bare_except(tree))
 
     return sorted(issues, key=lambda issue: (issue.line, issue.code))
 
