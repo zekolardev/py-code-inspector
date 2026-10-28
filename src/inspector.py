@@ -13,7 +13,7 @@ class Issue:
 
 
 class FunctionAnalyzer(ast.NodeVisitor):
-    """Detect unused local assignments while respecting nested functions."""
+    """Detect local variables that are assigned but never used."""
 
     def __init__(self):
         self.issues = []
@@ -80,10 +80,8 @@ class FunctionAnalyzer(ast.NodeVisitor):
 
             collect(statement)
 
-        # A nested function can use a variable from its enclosing function.
         for nested in nested_functions:
-            nested_free_names = self._get_free_names(nested)
-            used.update(nested_free_names)
+            used.update(self._get_free_names(nested))
 
         for argument in arguments:
             assigned.pop(argument.arg, None)
@@ -101,7 +99,6 @@ class FunctionAnalyzer(ast.NodeVisitor):
                         code="W001",
                         message=f"Unused variable '{name}'.",
                         line=line,
-                        severity="warning",
                     )
                 )
 
@@ -113,12 +110,12 @@ class FunctionAnalyzer(ast.NodeVisitor):
         """Return names loaded by a nested function but not defined locally."""
         assigned = set()
         loaded = set()
+
         arguments = (
             function_node.args.posonlyargs
             + function_node.args.args
             + function_node.args.kwonlyargs
         )
-
         assigned.update(argument.arg for argument in arguments)
 
         if function_node.args.vararg:
@@ -193,7 +190,6 @@ def _check_names(tree):
                     code="S001",
                     message=f"Use {expected} for '{name}'.",
                     line=node.lineno,
-                    severity="warning",
                 )
             )
 
@@ -204,6 +200,77 @@ def _check_unused_variables(tree):
     analyzer = FunctionAnalyzer()
     analyzer.visit(tree)
     return analyzer.issues
+
+
+def _get_assigned_names(target):
+    """Extract names assigned by an assignment target."""
+    if isinstance(target, ast.Name):
+        return [(target.id, target.lineno)]
+
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names = []
+        for element in target.elts:
+            names.extend(_get_assigned_names(element))
+        return names
+
+    return []
+
+
+def _check_module_variables(tree):
+    """Check module-level assignments for naming and unused variables."""
+    issues = []
+    assigned = {}
+
+    for statement in tree.body:
+        targets = []
+
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                targets.extend(_get_assigned_names(target))
+        elif isinstance(statement, ast.AnnAssign):
+            targets.extend(_get_assigned_names(statement.target))
+        elif isinstance(statement, ast.AugAssign):
+            targets.extend(_get_assigned_names(statement.target))
+
+        for name, line in targets:
+            if name.startswith("__") and name.endswith("__"):
+                continue
+
+            assigned.setdefault(name, line)
+
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+                issues.append(
+                    Issue(
+                        code="S003",
+                        message=(
+                            f"Use UPPER_SNAKE_CASE for module-level "
+                            f"constant '{name}'."
+                        ),
+                        line=line,
+                    )
+                )
+
+    # Collect names referenced anywhere in the module, including functions.
+    loaded_names = set()
+
+    class LoadNameVisitor(ast.NodeVisitor):
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Load):
+                loaded_names.add(node.id)
+
+    LoadNameVisitor().visit(tree)
+
+    for name, line in assigned.items():
+        if name not in loaded_names and not name.startswith("_"):
+            issues.append(
+                Issue(
+                    code="W002",
+                    message=f"Unused module-level variable '{name}'.",
+                    line=line,
+                )
+            )
+
+    return issues
 
 
 def _check_long_comments(source):
@@ -218,7 +285,6 @@ def _check_long_comments(source):
                     code="S002",
                     message="Comment is longer than 120 characters.",
                     line=line_number,
-                    severity="warning",
                 )
             )
 
@@ -241,6 +307,7 @@ def inspect_code(source):
     issues = []
     issues.extend(_check_names(tree))
     issues.extend(_check_unused_variables(tree))
+    issues.extend(_check_module_variables(tree))
     issues.extend(_check_long_comments(source))
 
     return sorted(issues, key=lambda issue: (issue.line, issue.code))
