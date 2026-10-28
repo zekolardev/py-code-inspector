@@ -16,6 +16,16 @@ class CLITests(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def create_problem_file(self, directory):
+        sample = Path(directory) / "sample.py"
+        sample.write_text(
+            "def CalculateTotal():\n"
+            "    unused_value = 100\n"
+            "    return 50\n",
+            encoding="utf-8",
+        )
+        return sample
+
     def test_json_output_is_valid(self):
         with tempfile.TemporaryDirectory() as directory:
             sample = Path(directory) / "sample.py"
@@ -37,13 +47,7 @@ class CLITests(unittest.TestCase):
 
     def test_issues_return_exit_code_one(self):
         with tempfile.TemporaryDirectory() as directory:
-            sample = Path(directory) / "sample.py"
-            sample.write_text(
-                "def CalculateTotal():\n"
-                "    unused_value = 100\n"
-                "    return 50\n",
-                encoding="utf-8",
-            )
+            sample = self.create_problem_file(directory)
 
             result = self.run_cli(str(sample))
 
@@ -71,6 +75,62 @@ class CLITests(unittest.TestCase):
             data = json.loads(report.read_text(encoding="utf-8"))
             self.assertEqual(data[0]["issues"], [])
             self.assertIn("Report saved to", result.stdout)
+
+    def test_select_filters_issue_codes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sample = self.create_problem_file(directory)
+
+            result = self.run_cli(
+                str(sample),
+                "--select",
+                "S001",
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(result.returncode, 1)
+            data = json.loads(result.stdout)
+            codes = [issue["code"] for issue in data[0]["issues"]]
+
+            self.assertTrue(codes)
+            self.assertTrue(all(code == "S001" for code in codes))
+
+    def test_select_returns_zero_when_no_matching_issues(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sample = self.create_problem_file(directory)
+
+            result = self.run_cli(
+                str(sample),
+                "--select",
+                "S002",
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(result.returncode, 0)
+            data = json.loads(result.stdout)
+            self.assertEqual(data[0]["issues"], [])
+
+    def test_severity_filters_warnings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sample = self.create_problem_file(directory)
+
+            result = self.run_cli(
+                str(sample),
+                "--severity",
+                "warning",
+                "--format",
+                "json",
+            )
+
+            self.assertEqual(result.returncode, 1)
+            data = json.loads(result.stdout)
+            issues = data[0]["issues"]
+
+            self.assertTrue(issues)
+            self.assertTrue(
+                all(issue["severity"] == "warning" for issue in issues)
+            )
 
 
 if __name__ == "__main__":

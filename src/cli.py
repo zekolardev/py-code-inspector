@@ -12,19 +12,23 @@ def main() -> int:
         description="Inspect Python files for common code issues."
     )
 
-    parser.add_argument(
-        "path",
-        help="Python file or directory to inspect",
-    )
+    parser.add_argument("path", help="Python file or directory to inspect")
     parser.add_argument(
         "--format",
         choices=["text", "json"],
         default="text",
         help="Output format (default: text)",
     )
+    parser.add_argument("--output", help="Write the report to a file")
     parser.add_argument(
-        "--output",
-        help="Write the report to a file",
+        "--select",
+        help="Comma-separated issue codes to include, e.g. S001,W001",
+    )
+    parser.add_argument(
+        "--severity",
+        choices=["all", "warning", "error"],
+        default="all",
+        help="Minimum issue severity to include",
     )
 
     args = parser.parse_args()
@@ -43,12 +47,29 @@ def main() -> int:
         print("No Python files found.", file=sys.stderr)
         return 0
 
+    selected_codes = None
+    if args.select:
+        selected_codes = {
+            code.strip().upper()
+            for code in args.select.split(",")
+            if code.strip()
+        }
+
     results = []
     issue_count = 0
     error_count = 0
 
     for file in files:
         issues = inspect_file(file)
+
+        if selected_codes is not None:
+            issues = [issue for issue in issues if issue.code in selected_codes]
+
+        if args.severity != "all":
+            issues = [
+                issue for issue in issues
+                if issue.severity == args.severity
+            ]
 
         results.append(
             {
@@ -66,9 +87,7 @@ def main() -> int:
         )
 
         issue_count += len(issues)
-        error_count += sum(
-            issue.severity == "error" for issue in issues
-        )
+        error_count += sum(issue.severity == "error" for issue in issues)
 
     if args.format == "json":
         report = json.dumps(results, indent=2, ensure_ascii=False)
@@ -97,9 +116,8 @@ def main() -> int:
 
     if args.output:
         try:
-            output_path = Path(args.output)
-            output_path.write_text(report + "\n", encoding="utf-8")
-            print(f"Report saved to {output_path}")
+            Path(args.output).write_text(report + "\n", encoding="utf-8")
+            print(f"Report saved to {args.output}")
         except OSError as error:
             print(f"Error: could not save report: {error}", file=sys.stderr)
             return 2
