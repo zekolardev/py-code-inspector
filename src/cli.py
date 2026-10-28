@@ -1,6 +1,7 @@
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from src.inspector import inspect_file
@@ -10,19 +11,27 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Inspect Python files for common code issues."
     )
-    parser.add_argument("path", help="Python file or directory to inspect")
+
+    parser.add_argument(
+        "path",
+        help="Python file or directory to inspect",
+    )
     parser.add_argument(
         "--format",
         choices=["text", "json"],
         default="text",
         help="Output format (default: text)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--output",
+        help="Write the report to a file",
+    )
 
+    args = parser.parse_args()
     target = Path(args.path)
 
     if not target.exists():
-        print(f"Error: path does not exist: {target}")
+        print(f"Error: path does not exist: {target}", file=sys.stderr)
         return 2
 
     if target.is_file():
@@ -31,7 +40,7 @@ def main() -> int:
         files = sorted(target.rglob("*.py"))
 
     if not files:
-        print("No Python files found.")
+        print("No Python files found.", file=sys.stderr)
         return 0
 
     results = []
@@ -40,6 +49,7 @@ def main() -> int:
 
     for file in files:
         issues = inspect_file(file)
+
         results.append(
             {
                 "file": str(file),
@@ -54,30 +64,47 @@ def main() -> int:
                 ],
             }
         )
+
         issue_count += len(issues)
-        error_count += sum(issue.severity == "error" for issue in issues)
+        error_count += sum(
+            issue.severity == "error" for issue in issues
+        )
 
     if args.format == "json":
-        print(json.dumps(results, indent=2, ensure_ascii=False))
+        report = json.dumps(results, indent=2, ensure_ascii=False)
     else:
+        lines = []
+
         for result in results:
-            print(f"\n{result['file']}")
+            lines.append(f"\n{result['file']}")
 
             if not result["issues"]:
-                print("  No issues found.")
+                lines.append("  No issues found.")
                 continue
 
             for issue in result["issues"]:
-                print(
+                lines.append(
                     f"  {issue['severity'].upper()} "
                     f"[{issue['code']}] line {issue['line']}: "
                     f"{issue['message']}"
                 )
 
-        print(
+        lines.append(
             f"\nInspection complete. Files: {len(files)} | "
             f"Issues: {issue_count} | Errors: {error_count}"
         )
+        report = "\n".join(lines)
+
+    if args.output:
+        try:
+            output_path = Path(args.output)
+            output_path.write_text(report + "\n", encoding="utf-8")
+            print(f"Report saved to {output_path}")
+        except OSError as error:
+            print(f"Error: could not save report: {error}", file=sys.stderr)
+            return 2
+    else:
+        print(report)
 
     return 1 if issue_count else 0
 
