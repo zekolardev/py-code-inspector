@@ -1,10 +1,7 @@
 
 import ast
-import io
 import re
-import tokenize
 from dataclasses import dataclass
-from pathlib import Path
 
 
 @dataclass
@@ -16,47 +13,91 @@ class Issue:
 
 
 class FunctionAnalyzer(ast.NodeVisitor):
-    """Analyze local variable assignments within one function."""
+    """Detect local variables that are assigned but never used."""
 
     def __init__(self):
-        self.defined: dict[str, int] = {}
-        self.used: set[str] = set()
+        self.issues = []
 
     def visit_FunctionDef(self, node):
+        self._analyze_function(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        self._analyze_function(node)
+
+    def _analyze_function(self, node):
+        assigned = {}
+        used = set()
+        nested_functions = []
+
+        def collect(scope_node):
+            for child in ast.iter_child_nodes(scope_node):
+                if isinstance(
+                    child,
+                    (
+                        ast.FunctionDef,
+                        ast.AsyncFunctionDef,
+                        ast.Lambda,
+                        ast.ClassDef,
+                    ),
+                ):
+                    if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        nested_functions.append(child)
+                    continue
+
+                if isinstance(child, ast.Name):
+                    if isinstance(child.ctx, ast.Store):
+                        assigned.setdefault(child.id, child.lineno)
+                    elif isinstance(child.ctx, ast.Load):
+                        used.add(child.id)
+
+                collect(child)
+
         for statement in node.body:
-            if isinstance(
-                statement,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
-            ):
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    self.defined[statement.name] = statement.lineno
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                nested_functions.append(statement)
                 continue
 
-            self.visit(statement)
+            collect(statement)
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+        # Count references inside nested functions for the enclosing scope.
+        for nested in nested_functions:
+            for item in ast.walk(nested):
+                if isinstance(item, ast.Name) and isinstance(item.ctx, ast.Load):
+                    used.add(item.id)
 
-    def visit_Lambda(self, node):
-        return
+        # Function parameters are not unused local assignments.
+        arguments = (
+            node.args.posonlyargs
+            + node.args.args
+            + node.args.kwonlyargs
+        )
 
-    def visit_Name(self, node):
-        if isinstance(node.ctx, ast.Store):
-            self.defined[node.id] = node.lineno
-        elif isinstance(node.ctx, ast.Load):
-            self.used.add(node.id)
+        for argument in arguments:
+            assigned.pop(argument.arg, None)
 
-    def visit_ExceptHandler(self, node):
-        if node.name:
-            self.defined[node.name] = node.lineno
+        if node.args.vararg:
+            assigned.pop(node.args.vararg.arg, None)
 
-        if node.type:
-            self.visit(node.type)
+        if node.args.kwarg:
+            assigned.pop(node.args.kwarg.arg, None)
 
-        for statement in node.body:
-            self.visit(statement)
+        for name, line in assigned.items():
+            if name not in used and not name.startswith("_"):
+                self.issues.append(
+                    Issue(
+                        code="W001",
+                        message=f"Unused variable '{name}'.",
+                        line=line,
+                        severity="warning",
+                    )
+                )
+
+        # Analyze nested functions independently.
+        for nested in nested_functions:
+            self._analyze_function(nested)
 
 
-def _check_names(tree: ast.AST) -> list[Issue]:
+def _check_names(tree):
     issues = []
     snake_case_pattern = re.compile(r"^[a-z_][a-z0-9_]*$")
 
@@ -69,6 +110,7 @@ def _check_names(tree: ast.AST) -> list[Issue]:
 
         name = node.name
 
+        # Special Python methods such as __init__ are exempt.
         if name.startswith("__") and name.endswith("__"):
             continue
 
@@ -89,36 +131,39 @@ def _check_names(tree: ast.AST) -> list[Issue]:
                     code="S001",
                     message=f"Use {expected} for '{name}'.",
                     line=node.lineno,
+                    severity="warning",
                 )
             )
 
     return issues
 
 
-def _check_unused_variables(tree: ast.AST) -> list[Issue]:
+def _check_unused_variables(tree):
+    analyzer = FunctionAnalyzer()
+    analyzer.visit(tree)
+    return analyzer.issues
+
+
+def _check_long_comments(source):
     issues = []
 
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        stripped = line.lstrip()
 
-        analyzer = FunctionAnalyzer()
-        analyzer.visit(node)
-
-        for name, line in analyzer.defined.items():
-            if name not in analyzer.used and not name.startswith("_"):
-                issues.append(
-                    Issue(
-                        code="W001",
-                        message=f"'{name}' is assigned but never used.",
-                        line=line,
-                    )
+        if stripped.startswith("#") and len(stripped) > 120:
+            issues.append(
+                Issue(
+                    code="S002",
+                    message="Comment is longer than 120 characters.",
+                    line=line_number,
+                    severity="warning",
                 )
+            )
 
     return issues
 
 
-def inspect_code(source: str) -> list[Issue]:
+def inspect_code(source):
     try:
         tree = ast.parse(source)
     except SyntaxError as error:
@@ -131,42 +176,24 @@ def inspect_code(source: str) -> list[Issue]:
             )
         ]
 
-    issues = _check_names(tree)
+    issues = []
+    issues.extend(_check_names(tree))
     issues.extend(_check_unused_variables(tree))
-
-    try:
-        tokens = tokenize.tokenize(
-            io.BytesIO(source.encode("utf-8")).readline
-        )
-
-        for token in tokens:
-            if token.type == tokenize.COMMENT and len(token.string) > 88:
-                issues.append(
-                    Issue(
-                        code="S002",
-                        message="Comment is longer than 88 characters.",
-                        line=token.start[0],
-                    )
-                )
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        pass
+    issues.extend(_check_long_comments(source))
 
     return sorted(issues, key=lambda issue: (issue.line, issue.code))
 
 
-def inspect_file(file_path: str | Path) -> list[Issue]:
-    path = Path(file_path)
-
+def inspect_file(path):
     try:
-        source = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
+        with open(path, "r", encoding="utf-8") as file:
+            return inspect_code(file.read())
+    except OSError as error:
         return [
             Issue(
                 code="E002",
-                message=f"Cannot read file: {error}",
+                message=f"Could not read file: {error}",
                 line=1,
                 severity="error",
             )
         ]
-
-    return inspect_code(source)
