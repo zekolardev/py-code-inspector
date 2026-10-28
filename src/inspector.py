@@ -1,4 +1,3 @@
-
 import ast
 import re
 from dataclasses import dataclass
@@ -12,145 +11,131 @@ class Issue:
     severity: str = "warning"
 
 
+class _FunctionScope:
+    """Collect assignments and reads within one function scope."""
+
+    def __init__(self, node):
+        self.node = node
+        self.assigned = {}
+        self.loaded = set()
+        self.globals = set()
+        self.nonlocals = set()
+        self.children = []
+        self._collect()
+
+    def _collect(self):
+        args = (
+            self.node.args.posonlyargs
+            + self.node.args.args
+            + self.node.args.kwonlyargs
+        )
+
+        if self.node.args.vararg:
+            args.append(self.node.args.vararg)
+
+        if self.node.args.kwarg:
+            args.append(self.node.args.kwarg)
+
+        for arg in args:
+            self.assigned.setdefault(arg.arg, arg.lineno)
+
+        scope = self
+
+        class Collector(ast.NodeVisitor):
+            def visit_FunctionDef(self, node):
+                if node is scope.node:
+                    for statement in node.body:
+                        self.visit(statement)
+                else:
+                    scope.children.append(node)
+
+            def visit_AsyncFunctionDef(self, node):
+                if node is scope.node:
+                    for statement in node.body:
+                        self.visit(statement)
+                else:
+                    scope.children.append(node)
+
+            def visit_Lambda(self, node):
+                return
+
+            def visit_ClassDef(self, node):
+                return
+
+            def visit_Global(self, node):
+                scope.globals.update(node.names)
+
+            def visit_Nonlocal(self, node):
+                scope.nonlocals.update(node.names)
+
+            def visit_Name(self, node):
+                if isinstance(node.ctx, (ast.Store, ast.Param)):
+                    scope.assigned.setdefault(node.id, node.lineno)
+                elif isinstance(node.ctx, ast.Load):
+                    scope.loaded.add(node.id)
+
+        collector = Collector()
+
+        for statement in self.node.body:
+            collector.visit(statement)
+
+        for name in self.globals | self.nonlocals:
+            self.assigned.pop(name, None)
+
+    def unused_assignments(self):
+        ignored = self.globals | self.nonlocals
+
+        return [
+            (name, line)
+            for name, line in self.assigned.items()
+            if name not in self.loaded
+            and name not in ignored
+            and not name.startswith("_")
+        ]
+
+
 class FunctionAnalyzer(ast.NodeVisitor):
-    """Detect local variables that are assigned but never used."""
+    """Detect unused local variables."""
 
     def __init__(self):
         self.issues = []
 
     def visit_FunctionDef(self, node):
-        self._analyze_function(node)
+        self._analyze(node)
 
     def visit_AsyncFunctionDef(self, node):
-        self._analyze_function(node)
+        self._analyze(node)
 
-    def _analyze_function(self, node):
-        assigned = {}
-        used = set()
-        nested_functions = []
+    def _analyze(self, node):
+        scope = _FunctionScope(node)
 
-        arguments = (
-            node.args.posonlyargs
-            + node.args.args
-            + node.args.kwonlyargs
-        )
+        for child in scope.children:
+            child_scope = _FunctionScope(child)
 
-        if node.args.vararg:
-            arguments += (node.args.vararg,)
+            referenced_names = (
+                child_scope.loaded | child_scope.nonlocals
+            )
 
-        if node.args.kwarg:
-            arguments += (node.args.kwarg,)
+            for name in referenced_names:
+                if name in scope.assigned:
+                    scope.loaded.add(name)
 
-        def collect(scope_node):
-            for child in ast.iter_child_nodes(scope_node):
-                if isinstance(
-                    child,
-                    (
-                        ast.FunctionDef,
-                        ast.AsyncFunctionDef,
-                        ast.Lambda,
-                        ast.ClassDef,
-                    ),
-                ):
-                    if isinstance(
-                        child,
-                        (ast.FunctionDef, ast.AsyncFunctionDef),
-                    ):
-                        nested_functions.append(child)
-                    continue
-
-                if isinstance(child, ast.Name):
-                    if isinstance(child.ctx, ast.Store):
-                        assigned.setdefault(child.id, child.lineno)
-                    elif isinstance(child.ctx, ast.Load):
-                        used.add(child.id)
-
-                collect(child)
-
-        for statement in node.body:
-            if isinstance(
-                statement,
-                (ast.FunctionDef, ast.AsyncFunctionDef),
-            ):
-                nested_functions.append(statement)
-                continue
-
-            collect(statement)
-
-        for nested in nested_functions:
-            used.update(self._get_free_names(nested))
-
-        for argument in arguments:
-            assigned.pop(argument.arg, None)
-
-        for name, line in assigned.items():
-            if name not in used and not name.startswith("_"):
-                self.issues.append(
-                    Issue(
-                        code="W001",
-                        message=f"Unused variable '{name}'.",
-                        line=line,
-                    )
+        for name, line in scope.unused_assignments():
+            self.issues.append(
+                Issue(
+                    code="W001",
+                    message=f"Unused variable '{name}'.",
+                    line=line,
                 )
+            )
 
-        for nested in nested_functions:
-            self._analyze_function(nested)
-
-    @staticmethod
-    def _get_free_names(function_node):
-        """Approximate names captured from an enclosing scope."""
-        assigned = set()
-        loaded = set()
-
-        arguments = (
-            function_node.args.posonlyargs
-            + function_node.args.args
-            + function_node.args.kwonlyargs
-        )
-        assigned.update(argument.arg for argument in arguments)
-
-        if function_node.args.vararg:
-            assigned.add(function_node.args.vararg.arg)
-
-        if function_node.args.kwarg:
-            assigned.add(function_node.args.kwarg.arg)
-
-        def collect(scope_node):
-            for child in ast.iter_child_nodes(scope_node):
-                if isinstance(
-                    child,
-                    (
-                        ast.FunctionDef,
-                        ast.AsyncFunctionDef,
-                        ast.Lambda,
-                        ast.ClassDef,
-                    ),
-                ):
-                    continue
-
-                if isinstance(child, ast.Name):
-                    if isinstance(child.ctx, ast.Store):
-                        assigned.add(child.id)
-                    elif isinstance(child.ctx, ast.Load):
-                        loaded.add(child.id)
-
-                collect(child)
-
-        for statement in function_node.body:
-            if isinstance(
-                statement,
-                (ast.FunctionDef, ast.AsyncFunctionDef),
-            ):
-                continue
-
-            collect(statement)
-
-        return loaded - assigned
+        for child in scope.children:
+            self._analyze(child)
 
 
 def _check_names(tree):
     issues = []
-    snake_case_pattern = re.compile(r"^[a-z_][a-z0-9_]*$")
+    pattern = re.compile(r"^[a-z_][a-z0-9_]*$")
 
     for node in ast.walk(tree):
         if not isinstance(
@@ -172,7 +157,7 @@ def _check_names(tree):
             )
             expected = "PascalCase"
         else:
-            valid = bool(snake_case_pattern.fullmatch(name))
+            valid = bool(pattern.fullmatch(name))
             expected = "snake_case"
 
         if not valid:
@@ -198,12 +183,46 @@ def _get_assigned_names(target):
         return [(target.id, target.lineno)]
 
     if isinstance(target, (ast.Tuple, ast.List)):
-        names = []
-        for element in target.elts:
-            names.extend(_get_assigned_names(element))
-        return names
+        result = []
+
+        for item in target.elts:
+            result.extend(_get_assigned_names(item))
+
+        return result
 
     return []
+
+
+def _module_loads(tree):
+    """Find module-level names referenced in functions and classes."""
+    loaded = set()
+
+    class ModuleVisitor(ast.NodeVisitor):
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Load):
+                loaded.add(node.id)
+
+        def visit_FunctionDef(self, node):
+            local = _FunctionScope(node)
+            loaded.update(local.loaded - set(local.assigned))
+            loaded.update(local.globals)
+
+            for child in local.children:
+                self.visit(child)
+
+        def visit_AsyncFunctionDef(self, node):
+            self.visit_FunctionDef(node)
+
+        def visit_ClassDef(self, node):
+            for statement in node.body:
+                self.visit(statement)
+
+    visitor = ModuleVisitor()
+
+    for statement in tree.body:
+        visitor.visit(statement)
+
+    return loaded
 
 
 def _check_module_variables(tree):
@@ -216,9 +235,8 @@ def _check_module_variables(tree):
         if isinstance(statement, ast.Assign):
             for target in statement.targets:
                 targets.extend(_get_assigned_names(target))
-        elif isinstance(statement, ast.AnnAssign):
-            targets.extend(_get_assigned_names(statement.target))
-        elif isinstance(statement, ast.AugAssign):
+
+        elif isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
             targets.extend(_get_assigned_names(statement.target))
 
         for name, line in targets:
@@ -232,24 +250,17 @@ def _check_module_variables(tree):
                     Issue(
                         code="S003",
                         message=(
-                            f"Use UPPER_SNAKE_CASE for module-level "
+                            "Use UPPER_SNAKE_CASE for module-level "
                             f"constant '{name}'."
                         ),
                         line=line,
                     )
                 )
 
-    loaded_names = set()
-
-    class LoadNameVisitor(ast.NodeVisitor):
-        def visit_Name(self, node):
-            if isinstance(node.ctx, ast.Load):
-                loaded_names.add(node.id)
-
-    LoadNameVisitor().visit(tree)
+    loaded = _module_loads(tree)
 
     for name, line in assigned.items():
-        if name not in loaded_names and not name.startswith("_"):
+        if name not in loaded and not name.startswith("_"):
             issues.append(
                 Issue(
                     code="W002",
@@ -280,7 +291,6 @@ def _check_long_comments(source):
 
 
 def _check_bare_except(tree):
-    """Warn when an except handler catches every exception implicitly."""
     issues = []
 
     for node in ast.walk(tree):
@@ -302,6 +312,7 @@ def _check_bare_except(tree):
 def inspect_code(source):
     try:
         tree = ast.parse(source)
+
     except SyntaxError as error:
         return [
             Issue(
@@ -319,13 +330,17 @@ def inspect_code(source):
     issues.extend(_check_long_comments(source))
     issues.extend(_check_bare_except(tree))
 
-    return sorted(issues, key=lambda issue: (issue.line, issue.code))
+    return sorted(
+        issues,
+        key=lambda issue: (issue.line, issue.code),
+    )
 
 
 def inspect_file(path):
     try:
         with open(path, "r", encoding="utf-8") as file:
             return inspect_code(file.read())
+
     except OSError as error:
         return [
             Issue(
