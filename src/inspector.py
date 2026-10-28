@@ -15,32 +15,30 @@ class Issue:
 
 
 class FunctionAnalyzer(ast.NodeVisitor):
+    """Analyze local variable assignments within one function."""
+
     def __init__(self):
         self.defined: dict[str, int] = {}
         self.used: set[str] = set()
 
     def visit_FunctionDef(self, node):
-        # Analyze nested functions independently.
-        for arg in (
-            node.args.posonlyargs
-            + node.args.args
-            + node.args.kwonlyargs
-        ):
-            self.defined[arg.arg] = arg.lineno if hasattr(arg, "lineno") else node.lineno
-
-        if node.args.vararg:
-            self.defined[node.args.vararg.arg] = node.lineno
-        if node.args.kwarg:
-            self.defined[node.args.kwarg.arg] = node.lineno
-
+        # Nested functions have their own analysis scope.
+        # Their names are still assignments in the current scope.
         for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if isinstance(
+                statement,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    self.defined[statement.name] = statement.lineno
                 continue
+
             self.visit(statement)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_Lambda(self, node):
+        # Lambda scopes are intentionally analyzed separately in future work.
         return
 
     def visit_Name(self, node):
@@ -49,31 +47,47 @@ class FunctionAnalyzer(ast.NodeVisitor):
         elif isinstance(node.ctx, ast.Load):
             self.used.add(node.id)
 
+    def visit_ExceptHandler(self, node):
+        if node.name:
+            self.defined[node.name] = node.lineno
+
+        if node.type:
+            self.visit(node.type)
+
+        for statement in node.body:
+            self.visit(statement)
+
 
 def _check_names(tree: ast.AST) -> list[Issue]:
     issues = []
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            name = node.name
-            if name.startswith("__") and name.endswith("__"):
-                continue
+        if not isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ):
+            continue
 
-            if isinstance(node, ast.ClassDef):
-                valid = name[0].isupper() and "_" not in name
-                expected = "PascalCase"
-            else:
-                valid = name.islower()
-                expected = "lowercase_with_underscores"
+        name = node.name
 
-            if not valid:
-                issues.append(
-                    Issue(
-                        code="S001",
-                        message=f"Use {expected} for '{name}'.",
-                        line=node.lineno,
-                    )
+        if name.startswith("__") and name.endswith("__"):
+            continue
+
+        if isinstance(node, ast.ClassDef):
+            valid = name.isidentifier() and name[0].isupper() and "_" not in name
+            expected = "PascalCase"
+        else:
+            valid = name.isidentifier() and name.islower()
+            expected = "lowercase_with_underscores"
+
+        if not valid:
+            issues.append(
+                Issue(
+                    code="S001",
+                    message=f"Use {expected} for '{name}'.",
+                    line=node.lineno,
                 )
+            )
 
     return issues
 
@@ -88,6 +102,7 @@ def _check_unused_variables(tree: ast.AST) -> list[Issue]:
         analyzer = FunctionAnalyzer()
         analyzer.visit(node)
 
+        # Function parameters are deliberately excluded from this check.
         for name, line in analyzer.defined.items():
             if name not in analyzer.used and not name.startswith("_"):
                 issues.append(
@@ -118,7 +133,10 @@ def inspect_code(source: str) -> list[Issue]:
     issues.extend(_check_unused_variables(tree))
 
     try:
-        tokens = tokenize.tokenize(io.BytesIO(source.encode("utf-8")).readline)
+        tokens = tokenize.tokenize(
+            io.BytesIO(source.encode("utf-8")).readline
+        )
+
         for token in tokens:
             if token.type == tokenize.COMMENT and len(token.string) > 88:
                 issues.append(
