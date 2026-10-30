@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-code-inspector"
+version = "0.2.0"
+description = "A lightweight static analysis tool for Python source code."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+authors = [
+    { name = "Abolfazl Kazemi" }
+]
+keywords = [
+    "python",
+    "static-analysis",
+    "code-quality",
+    "linter",
+    "ast"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance"
+]
+
+[project.scripts]
+py-code-inspector = "py_code_inspector.cli:main"
+
+[tool.setuptools]
+packages = ["py_code_inspector"]

@@ -1,5 +1,5 @@
-﻿import unittest
-from src.inspector import inspect_code
+import unittest
+from py_code_inspector.inspector import inspect_code
 
 
 class ScopeAndExceptionTests(unittest.TestCase):
@@ -28,3 +28,4 @@ class ScopeAndExceptionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

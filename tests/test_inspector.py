@@ -1,7 +1,7 @@
 
 import unittest
 
-from src.inspector import inspect_code
+from py_code_inspector.inspector import inspect_code
 
 
 class InspectorTests(unittest.TestCase):
@@ -145,3 +145,4 @@ class InspectorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

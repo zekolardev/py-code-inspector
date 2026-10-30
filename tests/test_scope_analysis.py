@@ -1,7 +1,7 @@
 
 import unittest
 
-from src.inspector import inspect_code
+from py_code_inspector.inspector import inspect_code
 
 
 class ScopeAnalysisTests(unittest.TestCase):
@@ -95,3 +95,4 @@ def calculate():
 
 if __name__ == "__main__":
     unittest.main()
+

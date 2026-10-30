@@ -1,4 +1,3 @@
-
 import json
 import subprocess
 import sys
@@ -10,7 +9,7 @@ from pathlib import Path
 class CLITests(unittest.TestCase):
     def run_cli(self, *args):
         return subprocess.run(
-            [sys.executable, "-m", "src.cli", *args],
+            [sys.executable, "-m", "py_code_inspector.cli", *args],
             capture_output=True,
             text=True,
             encoding="utf-8",

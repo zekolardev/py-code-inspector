@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from src.inspector import inspect_file
+from py_code_inspector.inspector import inspect_file
 
 
 def main() -> int:
@@ -129,3 +129,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

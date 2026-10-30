@@ -1,27 +1,28 @@
 # Py Code Inspector
 
-A lightweight, dependency-free Python static code inspection tool.
+A lightweight, dependency-free static analysis tool for Python source code.
 
-Py Code Inspector analyzes Python source files and directories to identify common code quality issues using Python's built-in libraries.
+Py Code Inspector analyzes Python files and directories to identify common code quality issues using Python's built-in AST and other standard library modules.
 
 ## Features
 
 - Detects Python syntax errors.
 - Checks function and class naming conventions.
-- Identifies potentially unused local and module-level variables.
+- Identifies potentially unused local variables and parameters.
+- Identifies potentially unused module-level variables.
 - Checks module-level variable naming conventions.
 - Detects comments longer than 120 characters.
 - Reports bare `except:` statements.
-- Inspects individual Python files or entire directories.
-- Supports text and JSON reports.
+- Inspects individual Python files or entire directories recursively.
+- Supports text and JSON output formats.
 - Filters findings by issue code or severity.
-- Saves reports to files.
-- Includes automated tests and GitHub Actions CI.
+- Saves reports to external files.
+- Includes automated unit tests and GitHub Actions CI.
 
 ## Requirements
 
-- Python 3.14
-- No third-party packages required.
+- Python 3.14 or newer.
+- No runtime third-party dependencies.
 
 ## Installation
 
